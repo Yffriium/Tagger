@@ -1,0 +1,1 @@
+- Grid elements do not keep the image at exactly 200x200. Why?
