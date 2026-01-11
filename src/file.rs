@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use iced::widget::image::Handle;
 use std::fs;
 
-const IMG_FILE_EXTS: [&'static str; 2] = ["png", "jpg"]; // put valid file extensions here
+const IMG_FILE_EXTS: [&'static str; 3] = ["png", "jpg", "jpeg"]; // put valid file extensions here
 pub const METADATA_NAME: &str = "tag.yff";
 
 pub type TagIdx = u32;
@@ -33,6 +33,7 @@ impl Tag{
     }
 }
 
+// directory struct
 pub struct Dir {
     pub path: PathBuf,
     pub name: String
@@ -41,7 +42,7 @@ pub struct Dir {
 #[derive(Debug)]
 pub struct Img {
     // put information relevant to images in here
-    pub idx: usize, // index into the array this is in
+    pub idx: usize, // index into the files list array for this elt
     pub path: PathBuf,
     pub name: String,
     pub extension: String,
@@ -53,6 +54,7 @@ pub fn default_dir() -> PathBuf {
     return env::current_dir().expect("Hey! We don't have perms to see this directory.");
 }
 
+/// Given the current directory, gets all the child images in the directory.
 pub fn image_list(curr: &PathBuf) -> Option<Vec<Img>> {
     if !curr.is_dir() {
         return None;
@@ -125,7 +127,7 @@ pub fn directory_list(curr: &PathBuf) -> Option<Vec<Dir>> {
         None => return None
     };
 
-    list.push(Dir { path: parent_path, name: String::from("..") });
+    list.push(Dir { path: parent_path, name: String::from(".. (Parent folder)") });
 
     for entry in files {
         match entry {
@@ -178,7 +180,8 @@ pub fn try_get_metadata_path(directory: &PathBuf) -> Option<PathBuf> {
 ///
 /// Lots of safety problems here. Could crash program if file is made wrong,
 /// or if file was edited by user.
-/// TODO go in and fix the bounds checks and safeties. 
+/// This should be safe, meaning that if the file is poorly formatted, this will
+/// just return None. 
 /// 
 /// Modifies the image vector itself
 pub fn read_metadata(metadata_path: &PathBuf,images: &mut Vec<Img>) -> Option<Vec<Tag>> {
@@ -186,6 +189,8 @@ pub fn read_metadata(metadata_path: &PathBuf,images: &mut Vec<Img>) -> Option<Ve
         Ok(v) => v,
         _ => return None,
     };
+
+    let max_idx = contents.len() - 1;
 
     // presume metadata is all ascii
     // FORMAT: 
@@ -202,6 +207,11 @@ pub fn read_metadata(metadata_path: &PathBuf,images: &mut Vec<Img>) -> Option<Ve
 
     let mut seek_idx = 0;
     'tag_loop: loop {
+
+        // bounds check
+        if seek_idx > max_idx {
+            return None;
+        }
         if contents[seek_idx] == b'\n' {
             // we're done
             break;
@@ -212,6 +222,10 @@ pub fn read_metadata(metadata_path: &PathBuf,images: &mut Vec<Img>) -> Option<Ve
         seek_idx += 8; // first 8 are numbers, MUST skip
         'string_loop: loop {
             seek_idx += 1; // increment first bc tag has non-zero length
+            // bounds check
+            if seek_idx > max_idx {
+                return None;
+            }
             match contents[seek_idx] {
                 0 => {
                     let found_tag = Tag::from_bytes(&contents[tag_start..seek_idx]);
@@ -230,14 +244,18 @@ pub fn read_metadata(metadata_path: &PathBuf,images: &mut Vec<Img>) -> Option<Ve
 
     // for each line...
     'file_loop: loop {
-        if seek_idx >= contents.len() {
-            break; // we are done here
+        if seek_idx > max_idx {
+            break; // we found everything
         }
 
         // first, get the file name
         let name_start = seek_idx;
         let file_name: String = 'name_loop: loop {
             seek_idx += 1;
+            // bounds check
+            if seek_idx > max_idx {
+                return None;
+            }
             match contents[seek_idx] {
                 0 => {
                     let found_tag = match std::str::from_utf8(&contents[name_start..seek_idx]) {
@@ -255,7 +273,8 @@ pub fn read_metadata(metadata_path: &PathBuf,images: &mut Vec<Img>) -> Option<Ve
         seek_idx += 1; // pointing to first tag
         let mut tidx_vec: Vec<TagIdx> = Vec::new();
         'tag_loop: loop {
-            if contents[seek_idx] == b'\n' || seek_idx >= contents.len() {
+            // bounds check or end of tags
+            if seek_idx > max_idx || contents[seek_idx] == b'\n' {
                 break 'tag_loop;
             }
             let tidx: TagIdx = u32::from_le_bytes(contents[seek_idx..seek_idx + 4].try_into().unwrap()); // TODO so unsafe...

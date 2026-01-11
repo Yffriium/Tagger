@@ -11,6 +11,7 @@ dependencies = [
  "image",
  "tokio",
  "tokio-stream",
+ "windows 0.62.2",
 ]
 
 [[package]]

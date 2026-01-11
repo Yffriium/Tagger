@@ -1,1 +1,16 @@
+MINIMUM FEATURES:
+- KBM controls
+- Let users color tags
+- Reveal in explorer
+- Error message on bar is useful
+- See what happens if a file with tags is deleted. Is there a crash?
+- Info/help screen?
+
+
 - Grid elements do not keep the image at exactly 200x200. Why?
+- Add the option to mass tag/untag images (do it to all of collection?)
+- Allow for associating images with "pools", ordering of images?
+- See how many images of each tag are currently displayed
+- Add tag autocomplete
+- Make responsive to sizing? Not sure.
+- Figure out how to access the OS thumbnails without horrors.
