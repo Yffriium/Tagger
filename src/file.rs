@@ -1,21 +1,21 @@
+use iced::widget::image::Handle;
 use std::env;
 use std::ffi::OsString;
-use std::path::PathBuf;
-use iced::widget::image::Handle;
 use std::fs;
+use std::path::{Path, PathBuf};
 
-const IMG_FILE_EXTS: [&'static str; 3] = ["png", "jpg", "jpeg"]; // put valid file extensions here
-pub const METADATA_NAME: &str = "tag.yff";
+const IMG_FILE_EXTS: [&str; 3] = ["png", "jpg", "jpeg"]; // put valid file extensions here
+pub const METADATA_NAME: &str = "tag.ffy";
 
 pub type TagIdx = u32;
 #[derive(Debug)]
 pub struct Tag {
     pub name: String,
     pub idx: TagIdx,
-    pub refs: u32 // how many files reference this tag
+    pub refs: u32, // how many files reference this tag
 }
 
-impl Tag{
+impl Tag {
     fn as_bytes(&self) -> Vec<u8> {
         let mut vec: Vec<u8> = Vec::new();
         vec.extend(self.idx.to_le_bytes());
@@ -27,7 +27,9 @@ impl Tag{
     fn from_bytes(bytes: &[u8]) -> Self {
         let idx: TagIdx = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
         let refs: u32 = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-        let name: String = std::str::from_utf8(&bytes[8..]).expect("Hey! Failed to get Tag string. crashing!").to_owned();
+        let name: String = std::str::from_utf8(&bytes[8..])
+            .expect("Hey! Failed to get Tag string. crashing!")
+            .to_owned();
 
         Tag { name, idx, refs }
     }
@@ -36,7 +38,7 @@ impl Tag{
 // directory struct
 pub struct Dir {
     pub path: PathBuf,
-    pub name: String
+    pub name: String,
 }
 
 #[derive(Debug)]
@@ -47,15 +49,15 @@ pub struct Img {
     pub name: String,
     pub extension: String,
     pub thumbnail_handle: Option<Handle>,
-    pub tags: Option<Vec<TagIdx>>
+    pub tags: Option<Vec<TagIdx>>,
 }
 
 pub fn default_dir() -> PathBuf {
-    return env::current_dir().expect("Hey! We don't have perms to see this directory.");
+    env::current_dir().expect("Hey! We don't have perms to see this directory.")
 }
 
 /// Given the current directory, gets all the child images in the directory.
-pub fn image_list(curr: &PathBuf) -> Option<Vec<Img>> {
+pub fn image_list(curr: &Path) -> Option<Vec<Img>> {
     if !curr.is_dir() {
         return None;
     }
@@ -63,7 +65,7 @@ pub fn image_list(curr: &PathBuf) -> Option<Vec<Img>> {
 
     let files = match curr.read_dir() {
         Ok(v) => v,
-        Err(_) => return None
+        Err(_) => return None,
     };
 
     for entry in files {
@@ -72,13 +74,11 @@ pub fn image_list(curr: &PathBuf) -> Option<Vec<Img>> {
                 let p = v.path();
                 if p.is_file() {
                     let ext_name: String = match p.extension() {
-                        Some(z) => {
-                            match z.to_str() {
-                                Some(r) => r.to_owned(),
-                                None => continue,
-                            }
+                        Some(z) => match z.to_str() {
+                            Some(r) => r.to_owned(),
+                            None => continue,
                         },
-                        None => continue
+                        None => continue,
                     };
 
                     // TODO:
@@ -93,18 +93,25 @@ pub fn image_list(curr: &PathBuf) -> Option<Vec<Img>> {
                         }
                     }
                     if !found {
-                        continue
+                        continue;
                     }
-                    
+
                     // good! add to list.
                     let os_file_name: OsString = v.file_name();
                     let name: String = match os_file_name.to_str() {
                         None => continue,
-                        Some(x) => x.to_owned()
+                        Some(x) => x.to_owned(),
                     };
-                    list.push(Img { idx: list.len(), path: p, name: name, extension: ext_name, thumbnail_handle: None, tags: None });
+                    list.push(Img {
+                        idx: list.len(),
+                        path: p,
+                        name,
+                        extension: ext_name,
+                        thumbnail_handle: None,
+                        tags: None,
+                    });
                 }
-            },
+            }
             Err(_) => continue, // the hell?
         }
     }
@@ -112,7 +119,9 @@ pub fn image_list(curr: &PathBuf) -> Option<Vec<Img>> {
     Some(list)
 }
 
-pub fn directory_list(curr: &PathBuf) -> Option<Vec<Dir>> {
+/// Given the current directory, gets a list of other adjacent directories.
+/// The parent is given, assuming it exists.
+pub fn directory_list(curr: &Path) -> Option<Vec<Dir>> {
     if !curr.is_dir() {
         return None;
     }
@@ -120,14 +129,14 @@ pub fn directory_list(curr: &PathBuf) -> Option<Vec<Dir>> {
 
     let files = match curr.read_dir() {
         Ok(v) => v,
-        Err(_) => return None
+        Err(_) => return None,
     };
-    let parent_path: PathBuf = match curr.parent() {
-        Some(v) => v.to_path_buf(),
-        None => return None
-    };
-
-    list.push(Dir { path: parent_path, name: String::from(".. (Parent folder)") });
+    if let Some(v) = curr.parent() {
+        list.push(Dir {
+            path: v.to_path_buf(),
+            name: String::from(".. (Parent folder)"),
+        });
+    }
 
     for entry in files {
         match entry {
@@ -138,11 +147,14 @@ pub fn directory_list(curr: &PathBuf) -> Option<Vec<Dir>> {
                     let os_file_name: OsString = v.file_name();
                     let name: &str = match os_file_name.to_str() {
                         None => continue,
-                        Some(x) => x
+                        Some(x) => x,
                     };
-                    list.push(Dir { path: p, name: name.to_owned() })
+                    list.push(Dir {
+                        path: p,
+                        name: name.to_owned(),
+                    })
                 }
-            },
+            }
             Err(_) => continue, // the hell?
         }
     }
@@ -151,27 +163,26 @@ pub fn directory_list(curr: &PathBuf) -> Option<Vec<Dir>> {
 }
 
 /// None if no metadata here. PathBuf of metadata otherwise.
-pub fn try_get_metadata_path(directory: &PathBuf) -> Option<PathBuf> {
+pub fn try_get_metadata_path(directory: &Path) -> Option<PathBuf> {
     let files = match directory.read_dir() {
         Err(_) => {
             println!("Could not get path to metadata! Error on reading dir.");
-            return None
-        },
-        Ok(i) => i
+            return None;
+        }
+        Ok(i) => i,
     };
 
     for entry in files {
         match entry {
             Ok(dirent) => {
                 let path = dirent.path();
-                if path.is_file() {
-                    if let Some(i) = dirent.file_name().to_str() {
-                        if i == METADATA_NAME {
-                            return Some(path);
-                        }
-                    }
+                if path.is_file()
+                    && let Some(i) = dirent.file_name().to_str()
+                    && i == METADATA_NAME
+                {
+                    return Some(path);
                 }
-            },
+            }
             _ => continue,
         }
     }
@@ -181,10 +192,10 @@ pub fn try_get_metadata_path(directory: &PathBuf) -> Option<PathBuf> {
 /// Lots of safety problems here. Could crash program if file is made wrong,
 /// or if file was edited by user.
 /// This should be safe, meaning that if the file is poorly formatted, this will
-/// just return None. 
-/// 
+/// just return None.
+///
 /// Modifies the image vector itself
-pub fn read_metadata(metadata_path: &PathBuf,images: &mut Vec<Img>) -> Option<Vec<Tag>> {
+pub fn read_metadata(metadata_path: &PathBuf, images: &mut [Img]) -> Option<Vec<Tag>> {
     let contents = match fs::read(metadata_path) {
         Ok(v) => v,
         _ => return None,
@@ -193,7 +204,7 @@ pub fn read_metadata(metadata_path: &PathBuf,images: &mut Vec<Img>) -> Option<Ve
     let max_idx = contents.len() - 1;
 
     // presume metadata is all ascii
-    // FORMAT: 
+    // FORMAT:
     // First line is the tag array.
     // Tags start with id, references, and then their name.
     // Tags are ended with the 0 byte (even the last tag!)
@@ -206,8 +217,7 @@ pub fn read_metadata(metadata_path: &PathBuf,images: &mut Vec<Img>) -> Option<Ve
     let mut tags: Vec<Tag> = Vec::new();
 
     let mut seek_idx = 0;
-    'tag_loop: loop {
-
+    loop {
         // bounds check
         if seek_idx > max_idx {
             return None;
@@ -226,24 +236,25 @@ pub fn read_metadata(metadata_path: &PathBuf,images: &mut Vec<Img>) -> Option<Ve
             if seek_idx > max_idx {
                 return None;
             }
-            match contents[seek_idx] {
-                0 => {
-                    let found_tag = Tag::from_bytes(&contents[tag_start..seek_idx]);
-                    tags.push(found_tag);
-                    seek_idx += 1; // keep going
-                    break 'string_loop;
-                },
-                _ => {}
-
+            if contents[seek_idx] == 0 {
+                let mut found_tag = Tag::from_bytes(&contents[tag_start..seek_idx]);
+                found_tag.refs = 0; // TODO this is not the greatest.
+                // If we never need to store the # of references, then we could
+                // alternatively just not encode the references.
+                tags.push(found_tag);
+                seek_idx += 1; // keep going
+                break 'string_loop;
             }
         }
     }
     // we now have our tag array
+    let num_tags: u32 = tags.len() as u32;
+
     seek_idx += 1;
     // we are now seeked at the start of the first file
 
     // for each line...
-    'file_loop: loop {
+    loop {
         if seek_idx > max_idx {
             break; // we found everything
         }
@@ -256,15 +267,12 @@ pub fn read_metadata(metadata_path: &PathBuf,images: &mut Vec<Img>) -> Option<Ve
             if seek_idx > max_idx {
                 return None;
             }
-            match contents[seek_idx] {
-                0 => {
-                    let found_tag = match std::str::from_utf8(&contents[name_start..seek_idx]) {
-                        Ok(t) => t,
-                        Err(_) => return None,
-                    };
-                    break 'name_loop found_tag.to_owned();
-                },
-                _ => {}
+            if contents[seek_idx] == 0 {
+                let found_tag = match std::str::from_utf8(&contents[name_start..seek_idx]) {
+                    Ok(t) => t,
+                    Err(_) => return None,
+                };
+                break 'name_loop found_tag.to_owned();
             }
         };
         // we now have the file name owned
@@ -277,9 +285,17 @@ pub fn read_metadata(metadata_path: &PathBuf,images: &mut Vec<Img>) -> Option<Ve
             if seek_idx > max_idx || contents[seek_idx] == b'\n' {
                 break 'tag_loop;
             }
-            let tidx: TagIdx = u32::from_le_bytes(contents[seek_idx..seek_idx + 4].try_into().unwrap()); // TODO so unsafe...
-            tidx_vec.push(tidx);
+            let tidx: TagIdx =
+                u32::from_le_bytes(contents[seek_idx..seek_idx + 4].try_into().unwrap()); // TODO so unsafe...
             seek_idx += 4;
+            if tidx >= num_tags {
+                // invalid tag index, just move on.
+                continue;
+            }
+
+            tidx_vec.push(tidx);
+            // add a reference
+            tags[tidx as usize].refs += 1;
         }
         seek_idx += 1; // now seeked at start of next line, ready
 
@@ -290,19 +306,19 @@ pub fn read_metadata(metadata_path: &PathBuf,images: &mut Vec<Img>) -> Option<Ve
             None => {
                 // what?
                 // didn't find?
-                println!("Hey! We didn't find an image from the file.");
+                // prob got deleted.
                 continue; // just go next
-            },
+            }
         };
 
         img.tags = match tidx_vec.len() {
             0 => None,
-            _ => Some(tidx_vec)
+            _ => Some(tidx_vec),
         };
     }
 
     println!("Found tags. Got these: {:?}", tags);
-    
+
     Some(tags)
 }
 
@@ -315,7 +331,7 @@ pub fn find_img_idx_by_name<'a>(compare: &str, images: &'a mut [Img]) -> Option<
 
 pub fn write_metadata(metadata_path: &PathBuf, tags: &Vec<Tag>, images: &Vec<Img>) -> bool {
     // presume metadata is all ascii
-    // FORMAT: 
+    // FORMAT:
     // First line is the tag array.
     // Tags separated by \0 character.
     // No more tags to list once we reach \n.
@@ -342,31 +358,27 @@ pub fn write_metadata(metadata_path: &PathBuf, tags: &Vec<Tag>, images: &Vec<Img
         contents.push(b'\n');
     }
 
-    match fs::write(metadata_path, contents) {
-        Ok(_) => true,
-        Err(_) => false,
-    }
+    fs::write(metadata_path, contents).is_ok()
 }
 
 ///
 /// From a tag list (which may have empty slots), identifies a mapping from old tag indices
 /// to new tag indices.
 /// We can then go through the files and perform this shift.
-/// 
+///
 fn new_mappings(tags: &Vec<Tag>) -> Vec<Option<TagIdx>> {
     let mut counter = 0;
     let mut vec: Vec<Option<TagIdx>> = Vec::new();
     for entry in tags {
-
         match entry.refs {
             0 => {
                 // add an empty entry, indicating that the TagIdx here maps to nothing
                 vec.push(None);
-            },
+            }
             _ => {
                 vec.push(Some(counter));
                 counter += 1;
-            }   
+            }
         }
     }
     vec
@@ -382,12 +394,12 @@ pub fn compress_tags(tags: &mut Vec<Tag>, images: &mut Vec<Img>) {
     }
 
     for image in images {
-        match image.tags.as_mut() {
-            Some(tag_list) => {
-                let new_tags_list: Vec<u32> = tag_list.iter().map(|x| new_map[*x as usize].unwrap()).collect();
-                image.tags = Some(new_tags_list);
-            },
-            None => {},
+        if let Some(tag_list) = image.tags.as_mut() {
+            let new_tags_list: Vec<u32> = tag_list
+                .iter()
+                .map(|x| new_map[*x as usize].unwrap())
+                .collect();
+            image.tags = Some(new_tags_list);
         }
     }
 }

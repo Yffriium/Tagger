@@ -1,12 +1,12 @@
-MINIMUM FEATURES:
-- KBM controls
+NEXT UP FEATURES:
+- Give icon
+- Force scroll to the currently selected item
+
+
 - Let users color tags
-- Reveal in explorer
-- Error message on bar is useful
-- See what happens if a file with tags is deleted. Is there a crash?
-- Info/help screen?
-
-
+- Allow for gifs
+- Allow for videos
+- Error message if user tries to go to bad directory
 - Grid elements do not keep the image at exactly 200x200. Why?
 - Add the option to mass tag/untag images (do it to all of collection?)
 - Allow for associating images with "pools", ordering of images?
@@ -14,3 +14,7 @@ MINIMUM FEATURES:
 - Add tag autocomplete
 - Make responsive to sizing? Not sure.
 - Figure out how to access the OS thumbnails without horrors.
+
+THINGS TO TEST:
+- Maintaining the .ffy file, even if files are deleted and stuff
+- Verifying proper format of the .ffy file

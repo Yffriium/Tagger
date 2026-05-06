@@ -4,27 +4,22 @@ mod search;
 mod style;
 use std::path::PathBuf;
 
-use iced::alignment::Horizontal::Left;
 use iced::alignment::Vertical;
 use iced::event::Event;
 use iced::keyboard;
 use iced::keyboard::key::Named;
-use iced::widget::button::Style;
 // use iced::futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use iced::Fill;
 use iced::FillPortion;
 use iced::Shrink;
 use iced::widget::image::{Allocation, Handle, Image, allocate};
 use iced::widget::{
-    Button, Column, Container, Grid, MouseArea, Row, Text, button, column, container, grid, row,
-    scrollable, text,
+    Button, Column, Container, MouseArea, Row, Text, button, column, container, row, scrollable,
+    text,
 };
 use iced::window::Settings;
 use iced::window::settings::PlatformSpecific;
-use iced::{
-    Alignment, Background, Border, Color, Element, Program, Subscription, Task, Theme, event,
-    window,
-};
+use iced::{Alignment, Element, Subscription, Task, window};
 
 use crate::file::{Dir, Img, Tag, TagIdx, default_dir};
 
@@ -33,6 +28,20 @@ const THUMBNAIL_RES: u32 = 200;
 const BOX_TEXT_HEIGHT: u32 = 20;
 const SCROLLBAR_WIDTH: u32 = 10;
 const LEFT_PANEL_WIDTH: u32 = 300;
+const THUMBNAIL_CARD_PADDING: u16 = 4;
+const THUMBNAIL_CARD_SPACING: u32 = 4;
+const THUMBNAIL_CARD_HEIGHT: u32 =
+    THUMBNAIL_RES + BOX_TEXT_HEIGHT + THUMBNAIL_CARD_PADDING as u32 * 2 + THUMBNAIL_CARD_SPACING;
+const THUMBNAIL_CARD_WIDTH: u32 = THUMBNAIL_RES + THUMBNAIL_CARD_PADDING as u32 * 2;
+const BODY_PADDING: u16 = 4;
+
+#[derive(Debug, Clone)]
+pub enum Direction {
+    Up,
+    Down,
+    Left,
+    Right,
+}
 
 ///
 /// The collection of images that the user has made.
@@ -42,6 +51,9 @@ struct Collection {
     selected: usize,
     /// The list of entries that are in the collection.
     entries: Vec<CollectionElement>,
+    /// A lookup table mapping from file indices to a boolean determining if
+    /// the file is in the collection.
+    in_collection_lookup: Vec<bool>,
 }
 
 /// An element within a collection.
@@ -66,6 +78,11 @@ struct CollectionProgress {
     max: u32,
 }
 
+enum Help {
+    HelpOff,
+    HelpOn(Option<&'static str>),
+}
+
 /// State struct
 struct Counter {
     panel: Panel,
@@ -81,6 +98,8 @@ struct Counter {
     collection: Option<Collection>,
     thumbnail_progress: Option<ThumbnailProgress>,
     collection_progress: Option<CollectionProgress>,
+    window_width: f32, // width of the main area, updated regularly
+    help: Help,
 }
 impl Default for Counter {
     fn default() -> Self {
@@ -99,7 +118,7 @@ impl Default for Counter {
         //     },
         // }
 
-        let cur_counter = Self {
+        Self {
             panel: Panel::None,
             body_panel: BodyPanel::Explore,
             directory_list: file::directory_list(&default_directory),
@@ -113,9 +132,9 @@ impl Default for Counter {
             collection: None,
             thumbnail_progress: None,
             collection_progress: None,
-        };
-
-        cur_counter
+            window_width: 1920.0,
+            help: Help::HelpOff,
+        }
     }
 }
 
@@ -160,6 +179,7 @@ pub enum Message {
     Explore,
     Collection,
     ToggleIntoCollection(usize), // index into image array, indicating selection
+    CollectionRemoveSelected,
     CollectionLeft,
     CollectionRight,
     CollectionImageAllocated(Allocation, usize), // index into image array
@@ -168,6 +188,10 @@ pub enum Message {
     ClearCollection,
     CloseApp(iced::window::Id), // window id? idk.
     KeyPressed(keyboard::Key),
+    WindowResized(iced::Size), // window resized
+    MoveSelection(Direction),  // move selection on thumbnail grid
+    RevealInExplorer(usize),   // index into image array
+    ToggleHelp,
 }
 
 /// Main methods for the state required by iced.
@@ -181,6 +205,11 @@ impl Counter {
                     Panel::File => Panel::None,
                     _ => Panel::File,
                 };
+                if let Help::HelpOn(_) = self.help {
+                    self.help = Help::HelpOn(Some(
+                        "Navigate through file directories in the File tab. See your current directory at the top of the screen. Go to the parent directory with the '..' option. Tags are localized to the directory you are in.",
+                    ));
+                }
                 Task::none()
             }
             Message::Search => {
@@ -188,6 +217,11 @@ impl Counter {
                     Panel::Search => Panel::None,
                     _ => Panel::Search,
                 };
+                if let Help::HelpOn(_) = self.help {
+                    self.help = Help::HelpOn(Some(
+                        "Search for files in this directory by their tags. For instance, the search 'green -frog' will show all files that have the tag 'green' but do not have the tag 'frog'.",
+                    ));
+                }
                 Task::none()
             }
             Message::Tag => {
@@ -195,6 +229,11 @@ impl Counter {
                     Panel::Tag => Panel::None,
                     _ => Panel::Tag,
                 };
+                if let Help::HelpOn(_) = self.help {
+                    self.help = Help::HelpOn(Some(
+                        "Add brand new Tags to the current file with the text box. Add or remove tags from the current file using the + and - buttons.",
+                    ));
+                }
                 Task::none()
             }
             Message::SwitchDirectory(idx) => self.go_to_dir(Some(idx as usize)),
@@ -250,7 +289,7 @@ impl Counter {
                         // remove it from the list
                         tlist.swap_remove(idx);
 
-                        if tlist.len() == 0 {
+                        if tlist.is_empty() {
                             img.tags = None; // no tags there anymore!
                         }
                     }
@@ -383,7 +422,7 @@ impl Counter {
                         .unwrap()
                         .iter()
                         .map(|x| (x, &file_list[*x]))
-                        .filter(|x| x.1.thumbnail_handle == None)
+                        .filter(|x| x.1.thumbnail_handle.is_none())
                         .map(|x| (*x.0, x.1.path.clone()))
                         .collect(),
                     None => return Task::none(),
@@ -410,28 +449,35 @@ impl Counter {
                     self.search_content += " ";
                     self.search_content += &l[tidx as usize].name;
                 }
-                return Task::none();
+                Task::none()
             }
             Message::AddNegativeSearchTerm(tidx) => {
                 if let Some(l) = self.tags_list.as_ref() {
                     self.search_content += " -";
                     self.search_content += &l[tidx as usize].name;
                 }
-                return Task::none();
+                Task::none()
             }
             Message::Collection => {
                 self.body_panel = BodyPanel::Collection;
+                if let Help::HelpOn(_) = self.help {
+                    self.help = Help::HelpOn(Some(
+                        "The Collection is your temporary workspace to mark a set of files. Mark files in Explore with right click or space bar, and the full-resolution files will appear here for viewing.",
+                    ));
+                }
                 Task::none()
             }
             Message::ToggleIntoCollection(idx) => {
                 match self.collection.as_mut() {
                     None => {
                         // make new
+                        if self.file_list.is_none() {
+                            return Task::none(); // ???
+                        }
 
-                        let img: &Img = match self.file_list.as_ref() {
-                            None => return Task::none(), // ????
-                            Some(list) => &list[idx],
-                        };
+                        let file_list = self.file_list.as_ref().unwrap();
+
+                        let img: &Img = &file_list[idx];
 
                         let entry_name = img.name.clone();
 
@@ -441,9 +487,13 @@ impl Counter {
                             alloc: None,
                         };
 
+                        let mut lookup_vec: Vec<bool> = file_list.iter().map(|_| false).collect();
+                        lookup_vec[idx] = true;
+
                         self.collection = Some(Collection {
                             selected: 0,
                             entries: vec![first_elt],
+                            in_collection_lookup: lookup_vec,
                         });
 
                         // progress
@@ -458,6 +508,10 @@ impl Counter {
                         })
                     }
                     Some(col) => {
+                        let img: &Img = match self.file_list.as_ref() {
+                            None => return Task::none(), // ????
+                            Some(list) => &list[idx],
+                        };
                         // check if add or subtract
 
                         // TODO .position is inefficient here. Really, we want
@@ -469,7 +523,10 @@ impl Counter {
                                 // subtract
                                 // remove at the given index
                                 // REMEMBER: Since we are removing, might have to make None.
+                                // let's mark img as not collected
+                                col.in_collection_lookup[idx] = false;
                                 col.entries.remove(i);
+
                                 let new_len = col.entries.len();
                                 if new_len == 0 {
                                     self.collection = None;
@@ -481,11 +538,6 @@ impl Counter {
                             None => {
                                 // add the entry
 
-                                let img: &Img = match self.file_list.as_ref() {
-                                    None => return Task::none(), // ????
-                                    Some(list) => &list[idx],
-                                };
-
                                 let entry_name = img.name.clone();
 
                                 let new_element = CollectionElement {
@@ -495,6 +547,7 @@ impl Counter {
                                 };
 
                                 col.entries.push(new_element);
+                                col.in_collection_lookup[idx] = true;
 
                                 // progress
                                 match self.collection_progress.as_mut() {
@@ -542,19 +595,19 @@ impl Counter {
                 }
             }
             Message::CollectionImageAllocated(allocation, idx) => {
-                if let Some(col) = self.collection.as_mut() {
-                    if let Some(entry) = col.entries.iter_mut().rev().find(|elt| elt.img_idx == idx)
-                    {
-                        entry.alloc = Some(allocation);
-                        if let Some(p) = self.collection_progress.as_mut() {
-                            p.current += 1;
-                            if p.current >= p.max {
-                                self.collection_progress = None; // done
-                            }
+                if let Some(col) = self.collection.as_mut()
+                    && let Some(entry) = col.entries.iter_mut().rev().find(|elt| elt.img_idx == idx)
+                {
+                    entry.alloc = Some(allocation);
+                    if let Some(p) = self.collection_progress.as_mut() {
+                        p.current += 1;
+                        if p.current >= p.max {
+                            self.collection_progress = None; // done
                         }
                     }
-                    // ignore if missing
                 }
+                // ignore if missing
+
                 // ignore if missing
                 Task::none()
             }
@@ -564,30 +617,36 @@ impl Counter {
             }
             Message::Explore => {
                 self.body_panel = BodyPanel::Explore;
+                if let Help::HelpOn(_) = self.help {
+                    self.help = Help::HelpOn(Some(
+                        "Explore is where you can see small thumbnails of the files in this directory. Click or use arrow keys to select. Right click or use space bar to add files to the Collection.",
+                    ));
+                }
                 Task::none()
             }
             Message::AddAllToCollection => {
                 // add all images (respecting filter) to the collection
-                let images_list = match self.file_list.as_ref() {
+                let images_list = match self.file_list.as_mut() {
                     Some(l) => l,
                     None => return Task::none(), // nothing to add, do nothing
                 };
 
                 let images_to_add: Vec<(usize, &Img)> = match self.file_filter_indices.as_ref() {
-                    None => images_list.iter().enumerate().map(|x| x).collect(), // todo uhmmm?? is this ok?
+                    None => images_list.iter().enumerate().collect(), // todo uhmmm?? is this ok?
                     Some(i) => i.iter().map(|idx| (*idx, &images_list[*idx])).collect(),
-                };
+                }; // TODO i guess I can't rly do this. Makes sense. I could use a worse method?
 
-                if images_to_add.len() == 0 {
+                if images_to_add.is_empty() {
                     return Task::none();
                 }
 
                 // ok, so we definitely need to add some.
                 // make collection if non-existent, bc we will add something
-                if let None = self.collection {
+                if self.collection.is_none() {
                     self.collection = Some(Collection {
                         selected: 0,
                         entries: Vec::new(),
+                        in_collection_lookup: images_list.iter().map(|_| false).collect(),
                     })
                 }
                 let col = self.collection.as_mut().unwrap();
@@ -603,6 +662,7 @@ impl Counter {
                     };
 
                     col.entries.push(new_element);
+                    col.in_collection_lookup[idx] = true;
 
                     let path_clone = image.path.clone();
                     let handle = Handle::from_path(path_clone);
@@ -637,17 +697,172 @@ impl Counter {
                 self.compress_and_save_to_file();
                 iced::window::close(id)
             }
-            Message::KeyPressed(key) => {
-                match key {
+            Message::KeyPressed(key) => match self.body_panel {
+                BodyPanel::Explore => match key {
                     keyboard::Key::Named(Named::ArrowLeft) => {
-                        Task::done(Message::CollectionLeft)
-                    },
+                        Task::done(Message::MoveSelection(Direction::Left))
+                    }
                     keyboard::Key::Named(Named::ArrowRight) => {
-                        Task::done(Message::CollectionRight)
-                    },
-                    _ => todo!(),
-                }
+                        Task::done(Message::MoveSelection(Direction::Right))
+                    }
+                    keyboard::Key::Named(Named::ArrowUp) => {
+                        Task::done(Message::MoveSelection(Direction::Up))
+                    }
+                    keyboard::Key::Named(Named::ArrowDown) => {
+                        Task::done(Message::MoveSelection(Direction::Down))
+                    }
+                    keyboard::Key::Named(Named::Space) => {
+                        let img_idx = self.get_selected_index();
+                        match img_idx {
+                            Some(i) => Task::done(Message::ToggleIntoCollection(i)),
+                            None => Task::none(),
+                        }
+                    }
+                    keyboard::Key::Named(Named::Tab) => Task::done(Message::Collection),
+                    _ => Task::none(),
+                },
+                BodyPanel::Collection => match key {
+                    keyboard::Key::Named(Named::ArrowLeft) => Task::done(Message::CollectionLeft),
+                    keyboard::Key::Named(Named::ArrowRight) => Task::done(Message::CollectionRight),
+                    keyboard::Key::Named(Named::Delete) => {
+                        Task::done(Message::CollectionRemoveSelected)
+                    }
+                    keyboard::Key::Named(Named::Space) => {
+                        Task::done(Message::CollectionRemoveSelected)
+                    }
+                    keyboard::Key::Character(ref s) if s == "x" => {
+                        Task::done(Message::CollectionRemoveSelected)
+                    }
+                    keyboard::Key::Named(Named::Tab) => Task::done(Message::Explore),
+                    _ => Task::none(),
+                },
             },
+            Message::WindowResized(size) => {
+                self.window_width = size.width;
+                Task::none()
+            }
+            Message::CollectionRemoveSelected => {
+                let selected_idx = match self.get_selected_index() {
+                    None => return Task::none(),
+                    Some(i) => i,
+                };
+
+                let col = match self.collection.as_mut() {
+                    None => return Task::none(),
+                    Some(col) => col,
+                };
+
+                // TODO duped code!! BAD!
+
+                // TODO .position is inefficient here. Really, we want
+                // to search from the END, since we can do it on O(1)
+                // because users will never ever add a ton of images to
+                // the collection immediately. there will be time.
+                match col.entries.iter().position(|x| x.img_idx == selected_idx) {
+                    Some(i) => {
+                        // subtract
+                        // remove at the given index
+                        // REMEMBER: Since we are removing, might have to make None.
+                        col.in_collection_lookup[selected_idx] = false;
+                        col.entries.remove(i);
+                        let new_len = col.entries.len();
+                        if new_len == 0 {
+                            self.collection = None;
+                        } else if col.selected >= new_len {
+                            col.selected = new_len - 1;
+                        }
+                        Task::none()
+                    }
+                    None => Task::none(),
+                }
+            }
+            Message::MoveSelection(direction) => {
+                let filtered = match self.get_filtered_images() {
+                    None => return Task::none(),
+                    Some(l) => {
+                        if l.is_empty() {
+                            return Task::none();
+                        } else {
+                            l
+                        }
+                    }
+                };
+                match self.selected_file_idx.as_ref() {
+                    None => {
+                        // just put at first index
+                        self.selected_file_idx = Some(filtered[0].idx);
+                        Task::none()
+                    }
+                    Some(sel_idx) => {
+                        // find it in the filter
+                        let found = match filtered.iter().position(|entry| entry.idx == *sel_idx) {
+                            None => {
+                                self.selected_file_idx = Some(filtered[0].idx);
+                                return Task::none();
+                            }
+                            Some(f) => f,
+                        };
+
+                        // need to move by the amount
+                        match direction {
+                            Direction::Up => {
+                                // get num per row
+                                let num_per_row = self.get_thumbnails_per_row() as usize;
+                                if num_per_row <= found {
+                                    self.selected_file_idx =
+                                        Some(filtered[found - num_per_row].idx);
+                                } else {
+                                    self.selected_file_idx = Some(filtered[0].idx);
+                                }
+                            }
+                            Direction::Down => {
+                                // get num per row
+                                let num_per_row = self.get_thumbnails_per_row() as usize;
+                                if num_per_row + found < filtered.len() {
+                                    self.selected_file_idx =
+                                        Some(filtered[found + num_per_row].idx);
+                                } else {
+                                    self.selected_file_idx = Some(filtered[filtered.len() - 1].idx);
+                                }
+                            }
+                            Direction::Left => {
+                                if found > 0 {
+                                    self.selected_file_idx = Some(filtered[found - 1].idx);
+                                }
+                            }
+                            Direction::Right => {
+                                if found < filtered.len() - 1 {
+                                    self.selected_file_idx = Some(filtered[found + 1].idx);
+                                }
+                            }
+                        }
+
+                        Task::none()
+                    }
+                }
+            }
+            Message::RevealInExplorer(idx) => match self.file_list.as_ref() {
+                Some(l) => {
+                    let res = opener::reveal(l[idx].path.clone());
+                    if res.is_err() {
+                        self.error_message = Some(String::from("Could not reveal in explorer."));
+                    }
+
+                    Task::none()
+                }
+                None => Task::none(),
+            },
+            Message::ToggleHelp => {
+                match self.help {
+                    Help::HelpOff => {
+                        self.help = Help::HelpOn(Some(
+                            "Help is now on. Click on a menu or panel and there will be an explanation down here. Click the 'Help' button again to disable.",
+                        ))
+                    }
+                    Help::HelpOn(_) => self.help = Help::HelpOff,
+                }
+                Task::none()
+            }
         }
     }
 
@@ -687,6 +902,12 @@ impl Counter {
                         crate::style::deselected_button
                     }),
                 text(dir_name).width(Fill).center(),
+                button("Help")
+                    .on_press(Message::ToggleHelp)
+                    .style(match self.help {
+                        Help::HelpOn(_) => style::selected_button,
+                        Help::HelpOff => style::deselected_button,
+                    }),
             ]
             .align_y(iced::Alignment::Center)
             .spacing(3)
@@ -754,32 +975,34 @@ impl Counter {
         .spacing(3)
         .padding(5)
         .width(Fill)
-        .height(35);
+        .height(40);
 
         let body_content: Container<Message> = match self.body_panel {
             BodyPanel::Collection => self.get_collection_body(),
             BodyPanel::Explore => {
-                container(scrollable(self.view_image_grid()).width(Fill).height(Fill))
-                    .width(Fill)
-                    .height(Fill)
+                // TODO use the scrollbar width in a style sheet
+                container(
+                    scrollable(self.view_image_grid())
+                        .width(Shrink)
+                        .height(Fill),
+                )
+                .width(Fill)
+                .height(Fill)
+                .align_x(Alignment::Center)
             }
         };
 
-        let body = column![body_bar, body_content.padding(5)]
+        let body = column![body_bar, body_content.padding(BODY_PADDING)]
             .width(Fill)
-            .height(Fill)
-            .spacing(5);
+            .height(Fill);
 
-        let main_container = container(
-            row![
-                left_panel,
-                container(body)
-                    .width(Fill)
-                    .height(Fill)
-                    .style(style::main_panel)
-            ]
-            .spacing(5),
-        )
+        let main_container = container(row![
+            left_panel,
+            container(body)
+                .width(Fill)
+                .height(Fill)
+                .style(style::main_panel)
+        ])
         .width(Fill)
         .height(Fill);
 
@@ -793,6 +1016,7 @@ impl Counter {
         Subscription::batch(vec![
             window::events().filter_map(|(id, event)| match event {
                 window::Event::CloseRequested => Some(Message::CloseApp(id)),
+                window::Event::Resized(sz) => Some(Message::WindowResized(sz)),
                 _ => None,
             }),
             iced::event::listen_with(|event, _, _| match event {
@@ -838,8 +1062,7 @@ impl Counter {
         let img = &mut file_list_obj[file_idx];
         match img.tags.as_mut() {
             None => {
-                let mut tag_vec_temp = Vec::new();
-                tag_vec_temp.push(tidx);
+                let tag_vec_temp = vec![tidx];
                 img.tags = Some(tag_vec_temp);
                 tag.refs += 1;
             }
@@ -859,124 +1082,66 @@ impl Counter {
     pub fn get_file_panel<'a>(&'a self) -> Column<'a, Message> {
         let mut col: Column<Message> = Column::new();
         col = col.push("Files:");
-        if let None = self.directory_list {
+        if self.directory_list.is_none() {
             col = col.push("Failed to get directory list.");
             return col;
         }
         let list = self.directory_list.as_ref().unwrap();
-        let mut i = 0;
-        for elt in list {
+        for (i, elt) in list.iter().enumerate() {
             col = col.push(
                 button(text(&elt.name).width(Fill))
-                    .on_press(Message::SwitchDirectory(i))
+                    .on_press(Message::SwitchDirectory(i.try_into().unwrap()))
                     .style(style::standard_button),
             );
-            i += 1;
         }
         col.spacing(4).padding(4)
     }
 
-    pub fn view_image_grid<'a>(&'a self) -> Grid<'a, Message> {
+    fn get_filtered_images(&self) -> Option<Vec<&Img>> {
+        let list = self.file_list.as_ref()?;
+        Some(match self.file_filter_indices.as_ref() {
+            Some(l) => l.iter().map(|x| &list[*x]).collect::<Vec<&Img>>(),
+            None => list.iter().collect::<Vec<&Img>>(),
+        })
+    }
+
+    pub fn view_image_grid<'a>(&'a self) -> Column<'a, Message> {
         // column of rows
         // first, get the images
-        if let None = self.file_list {
-            return Grid::new().push("Failed to get files in this directory.");
+        if self.file_list.is_none() {
+            return Column::new().push("Failed to get files in this directory.");
         }
         let list = self.file_list.as_ref().unwrap();
-        if list.len() == 0 {
-            return Grid::new().push("There's no images here. Use the \"File\" tab to navigate to a directory that has images.");
+        if list.is_empty() {
+            return Column::new().push("There's no images here. Use the \"File\" tab to navigate to a directory that has images.");
         }
-        let filtered_img_list: Vec<&Img> = match self.file_filter_indices.as_ref() {
-            Some(l) => l.iter().map(|x| &list[*x]).collect::<Vec<&Img>>(),
-            None => list.iter().map(|x| x).collect::<Vec<&Img>>(),
+        let filtered_img_list: Vec<&Img> = match self.get_filtered_images() {
+            None => return Column::new().push("Failed to get files in this directory."),
+            Some(l) => l,
         };
-        // need to filter
-        let grid =
-            filtered_img_list
-                .iter()
-                .fold(Grid::new().spacing(0), |grid: Grid<Message>, entry| {
-                    let selected = match self.selected_file_idx.as_ref() {
-                        Some(idx) if *idx == entry.idx => true,
-                        _ => false
-                    };
+        let entries_per_row = self.get_thumbnails_per_row() as usize; // TODO make this malleable
 
-                    grid.push(
-                        view_thumbnail_card(entry, selected)
+        let collection_lookup = match self.collection.as_ref() {
+            None => &list.iter().map(|_| false).collect(),
+            Some(c) => &c.in_collection_lookup,
+        };
+
+        filtered_img_list
+            .chunks(entries_per_row)
+            .fold(Column::new().width(Shrink), |col, stuff| {
+                let row = stuff.iter().fold(Row::new(), |row, entry| {
+                    let selected =
+                        matches!(self.selected_file_idx.as_ref(), Some(idx) if *idx == entry.idx);
+
+                    let collected = collection_lookup[entry.idx];
+
+                    // TODO add easy way to tell if collected
+                    row.push(
+                        view_thumbnail_card(entry, selected, collected).width(THUMBNAIL_CARD_WIDTH),
                     )
                 });
-
-        grid.fluid(200)
-
-        // let iter = filtered_img_list.chunks_exact(IMG_PER_ROW);
-        // let remainder = iter.remainder();
-
-        // // wow this stinks!
-        // let mut cur_idx = 0;
-        // ok let's try grid
-
-        // let mut col: Column<Message> = iter.fold(Column::new(), |col: Column<Message>,entries| {
-        //     let our_row = entries.iter().fold(Row::new().width(Fill).spacing(10), |row: Row<Message>, entry| { // TODO const?!?!
-        //         let container_content: Element<'_, Message> = match entry.thumbnail_handle.as_ref() {
-        //             Some(handle) => {
-        //                 MouseArea::new(
-        //                     Image::new(
-        //                         handle.clone()
-        //                     ).width(THUMBNAIL_RES).height(THUMBNAIL_RES).content_fit(iced::ContentFit::Cover)
-        //                 ).on_press(Message::ImageSelected(cur_idx)).on_right_press(Message::ToggleIntoCollection(cur_idx)).into()
-        //             },
-        //             None => Text::new("Loading...").into(),
-        //         };
-        //         cur_idx += 1;
-        //         row.push(
-
-        //             container(
-        //                 column![
-        //                     container(
-        //                         container_content
-        //                     ).height(Fill).width(Fill),
-        //                     text(&entry.name).height(BOX_TEXT_HEIGHT).width(Fill),
-
-        //                 ].width(Fill).height(Fill)
-        //             ).width(Fill).height(BOX_HEIGHT).style(container::bordered_box)
-        //         )
-        //     });
-        //     col.push(our_row)
-
-        // }).width(Fill).height(Fill).spacing(10); // TODO const??
-
-        // // TODO remainder is all weird urf
-        // // TODO repeated code in remainder section... how to deal with?
-        // // TODO remainder is just gonna be forgotten about for now.
-        // if remainder.len() > 0 {
-        //     let remainder_row = remainder.iter().fold(Row::new().width(Fill).spacing(10),|row: Row<Message>, entry| { // TODO const
-        //         let container_content: Element<'_, Message> = match entry.thumbnail_handle.as_ref() {
-        //             Some(handle) => {
-        //                 MouseArea::new(
-        //                     Image::new(
-        //                         handle.clone()
-        //                     ).width(Fill).height(Fill).content_fit(iced::ContentFit::Cover)
-        //                 ).on_press(Message::ImageSelected(cur_idx)).on_right_press(Message::ToggleIntoCollection(cur_idx)).into()
-        //             },
-        //             None => Text::new("Loading...").into(),
-        //         };
-        //         cur_idx += 1;
-        //         row.push(
-
-        //             container(
-        //                 column![
-        //                     container(
-        //                         container_content
-        //                     ).height(Fill).width(Fill),
-        //                     text(&entry.name).height(BOX_TEXT_HEIGHT).width(Fill),
-
-        //                 ].width(Fill).height(Fill)
-        //             ).width(Fill).height(BOX_HEIGHT).style(container::bordered_box)
-        //         )
-        //     });
-        //     col = col.push(remainder_row);
-        // }
-
-        //col
+                col.push(row.width(Shrink).height(THUMBNAIL_CARD_HEIGHT))
+            })
     }
 
     pub fn get_tag_panel<'a>(&'a self) -> Column<'a, Message> {
@@ -984,14 +1149,25 @@ impl Counter {
 
         let selected_idx = self.get_selected_index();
 
-        if let None = selected_idx {
+        if selected_idx.is_none() {
             return existing_tags_col
                 .push(text("Select a file to add tags."))
                 .padding(10);
         }
 
-        if let None = self.tags_list {
+        let top_row = row![
+            iced::widget::text_input("Enter tag...", &self.search_content)
+                .width(Fill)
+                .on_input(Message::SearchChanged),
+            button("+")
+                .on_press(Message::AddInputTag)
+                .style(style::add_button)
+        ]
+        .width(Fill);
+
+        if self.tags_list.is_none() {
             return existing_tags_col
+                .push(top_row)
                 .push(text("Add your first tag."))
                 .padding(10);
         }
@@ -1021,16 +1197,6 @@ impl Counter {
             ]
         }));
 
-        let top_row = row![
-            iced::widget::text_input("Enter tag...", &self.search_content)
-                .width(Fill)
-                .on_input(|s| Message::SearchChanged(s)),
-            button("+")
-                .on_press(Message::AddInputTag)
-                .style(style::add_button)
-        ]
-        .width(Fill);
-
         let outer_col = column![
             top_row,
             existing_tags_col,
@@ -1045,7 +1211,7 @@ impl Counter {
         let top_row = row![
             iced::widget::text_input("Search...", &self.search_content)
                 .width(Fill)
-                .on_input(|s| Message::SearchChanged(s)),
+                .on_input(Message::SearchChanged),
             button("Go")
                 .on_press(Message::SearchSend)
                 .style(style::add_button)
@@ -1091,13 +1257,21 @@ impl Counter {
             None => text("Loading...").center().into(),
         };
 
-        let center_stack = column![
+        let collection_controls = row![
             button("Remove from Collection")
-                .on_press(Message::ToggleIntoCollection(col_entry.img_idx))
+                .on_press(Message::CollectionRemoveSelected)
                 .height(Shrink)
                 .style(style::subtract_button),
-            main_elt
-        ];
+            button("Reveal in Explorer")
+                .on_press(Message::RevealInExplorer(col_entry.img_idx))
+                .height(Shrink)
+                .style(style::standard_button)
+        ]
+        .width(Fill)
+        .height(Shrink)
+        .spacing(5);
+
+        let center_stack = column![collection_controls, main_elt];
         let entire_panel = row![
             button("<")
                 .on_press(Message::CollectionLeft)
@@ -1137,21 +1311,21 @@ impl Counter {
 
         let selected_idx = self.get_selected_index();
 
-        if let None = selected_idx {
+        if selected_idx.is_none() {
             return contain_empty(col);
         }
 
-        if let None = self.file_list {
+        if self.file_list.is_none() {
             return contain_empty(col); // shouldn't be possible given above is None, but good to check i guess.
         }
 
-        if let None = self.tags_list {
+        if self.tags_list.is_none() {
             return contain_empty(col);
         }
 
         let selected_file: &Img = &self.file_list.as_ref().unwrap()[selected_idx.unwrap()];
 
-        if let None = selected_file.tags {
+        if selected_file.tags.is_none() {
             return contain_empty(col);
         }
 
@@ -1238,12 +1412,9 @@ impl Counter {
                     .collect();
                 self.file_list = Some(list);
                 // read metadata
-                match file::try_get_metadata_path(&self.directory) {
-                    Some(metadata_path) => {
-                        self.tags_list =
-                            file::read_metadata(&metadata_path, self.file_list.as_mut().unwrap())
-                    }
-                    None => {}
+                if let Some(metadata_path) = file::try_get_metadata_path(&self.directory) {
+                    self.tags_list =
+                        file::read_metadata(&metadata_path, self.file_list.as_mut().unwrap())
                 }
                 let num_to_load = simple_list.len() as u32;
                 let (msg_stream, shutdown_tx) =
@@ -1275,10 +1446,7 @@ impl Counter {
     /// Returns None if no selection.
     fn get_selected_index(&self) -> Option<usize> {
         match self.body_panel {
-            BodyPanel::Explore => match self.selected_file_idx {
-                None => None,
-                Some(idx) => Some(idx),
-            },
+            BodyPanel::Explore => self.selected_file_idx,
             BodyPanel::Collection => match self.collection.as_ref() {
                 None => None,
                 Some(col) => {
@@ -1290,8 +1458,15 @@ impl Counter {
     }
 
     fn view_bottom_bar<'a>(&'a self) -> Container<'a, Message> {
-        let basic_bar = || -> Container<'a, Message> {
-            container(text("Ready").align_y(Alignment::Center))
+        let basic_bar = |help: &Help| -> Container<'a, Message> {
+            let str = match help {
+                Help::HelpOff => "Ready",
+                Help::HelpOn(s) => match s {
+                    None => "Ready",
+                    Some(t) => *t,
+                },
+            };
+            container(text(str).align_y(Alignment::Center))
                 .style(style::bottom_bar)
                 .padding(10)
         };
@@ -1321,15 +1496,31 @@ impl Counter {
             match self.body_panel {
                 BodyPanel::Collection => match self.collection_progress.as_ref() {
                     Some(prog) if prog.max > 1 => progress(prog.current, prog.max),
-                    _ => basic_bar(),
+                    _ => basic_bar(&self.help),
                 },
                 BodyPanel::Explore => match self.thumbnail_progress.as_ref() {
                     Some(prog) if prog.max > 1 => progress(prog.current, prog.max),
-                    _ => basic_bar(),
+                    _ => basic_bar(&self.help),
                 },
             }
         };
         contents.width(Fill).height(50)
+    }
+
+    fn get_thumbnails_per_row(&self) -> u16 {
+        let width_to_work_with: f32 = self.window_width
+            - (BODY_PADDING * 2) as f32
+            - match self.panel {
+                Panel::None => 0.0,
+                _ => LEFT_PANEL_WIDTH as f32,
+            }
+            - SCROLLBAR_WIDTH as f32;
+
+        if width_to_work_with <= THUMBNAIL_CARD_WIDTH as f32 {
+            1
+        } else {
+            (width_to_work_with / (THUMBNAIL_CARD_WIDTH as f32)) as u16
+        }
     }
 }
 
@@ -1356,54 +1547,55 @@ fn progress_bar<'a>(amt: u32, total: u32) -> Row<'a, Message> {
     ]
 }
 
-fn view_thumbnail_card(image: &Img, selected: bool) -> Container<Message> {
-    let container_content: Element<'_, Message> =
-        match image.thumbnail_handle.as_ref() {
-            Some(handle) => MouseArea::new(
-                Image::new(handle.clone())
-                    .width(THUMBNAIL_RES)
-                    .height(THUMBNAIL_RES)
-                    .content_fit(iced::ContentFit::Cover),
-            )
-            .on_press(Message::ImageSelected(image.idx))
-            .on_right_press(Message::ToggleIntoCollection(image.idx))
-            .into(),
-            None => Text::new("Loading...").into(),
-        };
+fn view_thumbnail_card<'a>(
+    image: &'a Img,
+    selected: bool,
+    in_collection: bool,
+) -> Container<'a, Message> {
+    let container_content: Element<'_, Message> = match image.thumbnail_handle.as_ref() {
+        Some(handle) => MouseArea::new(
+            Image::new(handle.clone())
+                .width(THUMBNAIL_RES)
+                .height(THUMBNAIL_RES)
+                .content_fit(iced::ContentFit::Cover),
+        )
+        .on_press(Message::ImageSelected(image.idx))
+        .on_right_press(Message::ToggleIntoCollection(image.idx))
+        .into(),
+        None => Text::new("Loading...").into(),
+    };
     // determine whether to highlight
 
     let selection_style = match selected {
-        true => style::thumbnail_card_highlight,
-        false => style::thumbnail_card,
+        true => match in_collection {
+            true => style::thumbnail_card_highlight_collected,
+            false => style::thumbnail_card_highlight,
+        },
+        false => match in_collection {
+            true => style::thumbnail_card_collected,
+            false => style::thumbnail_card,
+        },
     };
 
     container(
         column![
             container(container_content).height(Fill).width(Fill),
-            container(text(&image.name).height(BOX_TEXT_HEIGHT).width(Fill))
-                .clip(true),
+            container(text(&image.name).height(BOX_TEXT_HEIGHT).width(Fill)).clip(true),
         ]
-        .width(Fill)
-        .height(Fill)
-        .spacing(4)
-        .padding(4),
+        .width(THUMBNAIL_CARD_WIDTH)
+        .height(THUMBNAIL_CARD_HEIGHT)
+        .spacing(THUMBNAIL_CARD_SPACING)
+        .padding(THUMBNAIL_CARD_PADDING),
     )
     .style(selection_style) // height thumbnail res?
-
-
 }
 
 pub fn is_valid_tag(name: &str) -> bool {
-    if name.len() == 0 || !name.is_ascii() {
+    if name.is_empty() || !name.is_ascii() {
         return false;
     }
-    for c in name.chars() {
-        match c {
-            '0'..='9' | 'a'..='z' | 'A'..='Z' | '_' => {}
-            _ => return false,
-        }
-    }
-    return true;
+    name.chars()
+        .all(|c| matches!(c,'0'..='9' | 'a'..='z' | 'A'..='Z' | '_'))
 }
 
 ///
